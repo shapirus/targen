@@ -22,6 +22,12 @@ black, red, white, #rrggbb notation.
 
     targen [options]
 
+A Docker image is provided for the convenience of an easier platform-independent execution. In this case,
+output format is PDF and the --output option is not allowed. Example (note that the `--` must be present to
+tell docker to stop processing the rest of the arguments as its own):
+
+    docker run shapirus/targen -- [options] > target.pdf
+
 Options (values listed are used as defaults, abbreviated options are allowed as per [Getopt::Long](https://metacpan.org/pod/Getopt%3A%3ALong)):
 
     --help
