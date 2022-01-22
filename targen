@@ -1,0 +1,966 @@
+#!/usr/bin/env perl
+
+use warnings;
+use strict;
+
+use Getopt::Long;
+use Pod::Usage;
+use Math::Trig qw(:pi tan);
+use Data::Dumper;
+use SVG;
+
+my $length_rx = '\d+(?:\.\d+)?\w{0,3}';
+
+my %config;
+
+init_config();
+main();
+
+sub main
+{
+	my $top_svg = SVG->new(
+		width => mm($config{'page_width'}),
+		height => mm($config{'page_height'})
+	);
+
+	$top_svg->rectangle(
+		x => 0,
+		y => 0,
+		width => mm($config{'page_width'}),
+		height => mm($config{'page_height'}),
+		style => {
+			fill => $config{'background'}
+		}
+	);
+
+	my $drawable_svg = $top_svg->svg(
+		x => mm($config{'page_margin'}),
+		y => mm($config{'page_margin'}),
+		width => mm($config{'page_width'} - 2 * $config{'page_margin'}),
+		height => mm($config{'page_height'} - 2 * $config{'page_margin'})
+	);
+
+	foreach my $target (mklayout($drawable_svg)) {
+		grid($target);
+		cross($target);
+		circles($target);
+		squares($target);
+	}
+
+	annotation($top_svg);
+
+	my $data = $top_svg->xmlify(
+		-namespace => "svg",
+		-pubid => "-//W3C//DTD SVG 1.0//EN",
+		-inline   => 1
+	);
+
+	if ($config{'output'}) {
+		open(my $out, ">$config{output}") || die "Failed to open $config{output}: $!";
+		print $out $data;
+		close($out);
+	} else {
+		print $data;
+	}
+}
+
+sub mklayout
+{
+	my $top = shift;
+
+	my @targets;
+
+	my ($top_w, $top_h) = getdim($top);
+	my $target_width = ($top_w - ($config{'layout_cols'} - 1) * $config{'target_separator_width'}) / $config{'layout_cols'};
+	my $target_height = ($top_h - ($config{'layout_rows'} - 1) * $config{'target_separator_width'}) / $config{'layout_rows'};
+
+	my $offset_y = 0;
+	for (my $row = 0; $row < $config{'layout_rows'}; $row++) {
+		my $offset_x = 0;
+		for (my $col = 0; $col < $config{'layout_cols'}; $col++) {
+			push @targets, $top->svg(
+				x => mm($offset_x),
+				y => mm($offset_y),
+				width => mm($target_width),
+				height => mm($target_height)
+			);
+			if ($col != 0 && $row == 0) {
+				$top->line(
+					x1 => mm($offset_x - $config{'target_separator_width'} / 2),
+					x2 => mm($offset_x - $config{'target_separator_width'} / 2),
+					y1 => 0,
+					y2 => mm($top_h),
+					style => {
+						'stroke' => $config{'target_separator_color'},
+						'stroke-width' => mm($config{'target_separator_width'})
+					}
+				);
+			}
+			$offset_x += $target_width + $config{'target_separator_width'};
+		}
+		if ($row != 0) {
+			$top->line(
+				x1 => 0,
+				x2 => mm($top_w),
+				y1 => mm($offset_y - $config{'target_separator_width'} / 2),
+				y2 => mm($offset_y - $config{'target_separator_width'} / 2),
+				style => {
+					'stroke' => $config{'target_separator_color'},
+					'stroke-width' => mm($config{'target_separator_width'})
+				}
+			);
+		}
+		$offset_y += $target_height + $config{'target_separator_width'};
+	}
+
+	return @targets;
+}
+
+sub grid
+{
+	my $c = shift;
+
+	return unless $config{'grid_major'};
+
+	my ($w, $h, $cx, $cy) = getdim($c);
+
+	my $main_ls = {
+		'stroke' => $config{'grid_line_color'},
+		'stroke-width' => mm($config{'grid_line_width'}),
+	};
+
+	my $sub_ls = {
+		'stroke' => $config{'grid_line_minor_color'},
+		'stroke-width' => mm($config{'grid_line_minor_width'}),
+		'stroke-dasharray' => '2 2'
+	};
+
+	my $sub_length = $config{'grid_major'} / $config{'grid_minor'};
+	my $sub_lines = $config{'grid_minor'} - 1;
+
+	foreach my $direction ('x', 'y') {
+		my $center = 1;
+		my $c1 = $direction eq 'x' ? $cx : $cy;
+		my $c2 = $c1;
+		my $boundary = $direction eq 'x' ? $w : $h;
+		while ($c1 >= 0 && $c2 <= $boundary) {
+			if ($direction eq 'x') {
+				$c->line(x1 => mm($c1), x2 => mm($c1), y1 => mm(0), y2 => mm($h), style => $main_ls);
+				$c->line(x1 => mm($c2), x2 => mm($c2), y1 => mm(0), y2 => mm($h), style => $main_ls) unless $center == 1;
+				my $sc1 = $c1;
+				my $sc2 = $c2;
+				for (my $i = 0; $i < $sub_lines; $i++) {
+					$sc1 -= $sub_length;
+					$c->line(x1 => mm($sc1), x2 => mm($sc1), y1 => mm(0), y2 => mm($h), style => $sub_ls) if $sc1 >= 0;
+					$sc2 += $sub_length;
+					$c->line(x1 => mm($sc2), x2 => mm($sc2), y1 => mm(0), y2 => mm($h), style => $sub_ls) if $sc2 <= $boundary;
+				}
+
+			} else {
+				$c->line(x1 => mm(0), x2 => mm($w), y1 => mm($c1), y2 => mm($c1), style => $main_ls);
+				$c->line(x1 => mm(0), x2 => mm($w), y1 => mm($c2), y2 => mm($c2), style => $main_ls) unless $center == 1;
+				my $sc1 = $c1;
+				my $sc2 = $c2;
+				for (my $i = 0; $i < $sub_lines; $i++) {
+					$sc1 -= $sub_length;
+					$c->line(x1 => mm(0), x2 => mm($w), y1 => mm($sc1), y2 => mm($sc1), style => $sub_ls) if $sc1 >= 0;
+					$sc2 += $sub_length;
+					$c->line(x1 => mm(0), x2 => mm($w), y1 => mm($sc2), y2 => mm($sc2), style => $sub_ls) if $sc2 <= $boundary;
+				}
+			}
+
+			$c1 -= $config{'grid_major'};
+			$c2 += $config{'grid_major'};
+
+			$center = 0;
+		}
+	}
+}
+
+sub cross
+{
+	my $c = shift;
+
+	my ($w, $h, $cx, $cy) = getdim($c);
+
+	return if !$config{'cross'};
+
+	my $height;
+	my $width;
+
+	if ($config{'cross'} < 0) {
+		$height = $h - 2 * (-1 * $config{'cross'});
+		$width  = $w - 2 * (-1 * $config{'cross'});
+	} else {
+		$height = $config{'cross'} * 2 > $h ? $h : $config{'cross'} * 2;
+		$width  = $config{'cross'} * 2 > $w ? $w : $config{'cross'} * 2;
+	}
+
+	my $ls = {
+		'stroke' => $config{'cross_line_color'},
+		'stroke-width' => mm($config{'cross_line_width'}),
+	};
+
+	$c->line(x1 => mm($cx), x2 => mm($cx), y1 => mm($cy - $height / 2), y2 => mm($cy + $height / 2), style => $ls);
+	$c->line(x1 => mm($cx - $width / 2), x2 => mm($cx + $width / 2), y1 => mm($cy), y2 => mm($cy), style => $ls);
+}
+
+sub circles
+{
+	my $c = shift;
+
+	my ($w, $h, $cx, $cy) = getdim($c);
+
+	# draw the innermost circle last (to support interleaving circles background in the future)
+	my @conf = sort {$b <=> $a} @{$config{'circles'}};
+
+	for (my $i = 0; $i < scalar @conf; $i++) {
+		my $radius = $conf[$i] / 2 - $config{'circle_line_width'} / 2;
+
+		next if $radius > $w / 2 || $radius > $h / 2;
+
+		my $fill = $i == $#conf ? $config{'center_fill'} : 'none';
+
+		$c->circle(cx => mm($cx), cy => mm($cy), r => mm($radius),
+			style => {
+				'stroke' => $config{'circle_line_color'},
+				'stroke-width' => mm($config{'circle_line_width'}),
+				'fill' => $fill,
+			}
+		);
+	}
+}
+
+sub squares
+{
+	my $c = shift;
+
+	my ($w, $h, $cx, $cy) = getdim($c);
+
+	my $offset = $config{'squares_offset'};
+
+	# relative to the drawing zone center
+	my @centers;
+	foreach my $y (-1, 1) {
+		foreach my $x (-1, 1) {
+			push @centers, [ $x * $offset, $y * $offset ];
+		}
+	}
+
+	my $width = my $height = $config{'squares_size'};
+
+	if ($config{'connect_squares_width'}) {
+		$c->rectangle(
+			x => mm($cx + $centers[0]->[0]),
+			y => mm($cy + $centers[0]->[1]),
+			width => mm($offset * 2),
+			height => mm($offset * 2),
+			style => {
+				'stroke-width' => mm($config{'connect_squares_width'}),
+				'stroke' => $config{'connect_squares_color'},
+				'fill' => 'none'
+			}
+		);
+	}
+
+	foreach my $coord (@centers) {
+		my $rcx = $cx + $coord->[0];
+		my $rcy = $cy + $coord->[1];
+		$c->rectangle(x => mm($rcx - $width / 2), y => mm($rcy - $height / 2), width => mm($width), height => mm($height),
+			style => {
+				'fill' => $config{'squares_fill'}
+			}
+		);
+	}
+}
+
+sub annotation
+{
+	my $c = shift;
+
+	my $text = $config{'annotation'};
+
+	return unless $text;
+
+	# hardcoded for the time being
+	my $font_size = 7;
+
+	my $x = $config{'page_margin'} / 2;
+	my $y = $config{'page_margin'} / 2;
+
+	my $boxw = length($text) * $font_size * 7.5 / 10;
+	my $boxh = $font_size * 1.5;
+
+	$c->rect(x => mm($x), y => mm($y), width => mm($boxw), height => mm($boxh),
+		style => {
+			fill => 'white',
+			stroke => 'black',
+			'stroke-width' => '0.2mm'
+		}
+	);
+
+	$c->text(x => mm($x + $boxw / 2), y => mm($y + $boxh / 2), -cdata => $text,
+		'text-anchor' => 'middle',
+		'dominant-baseline' => 'middle',
+		style => {
+			font => 'Lato Medium',
+			'font-size' => mm($font_size),
+			'fill' => 'black'
+		}
+	);
+}
+
+sub tomm
+{
+	my $input = shift;
+	my $err = shift;
+	my $distance = shift; # if distance is defined, will assume that angle units are allowed
+
+	my %units = (
+		in => 25.4,
+		yd => 914.4,
+		ft => 304.8,
+		mi => 1609344,
+		mm => 1,
+		cm => 10,
+		m => 1000,
+		km => 1000000
+	);
+	my %angle = (
+		moa => 2 * ($distance ? $distance : 0) * tan(pi / (120*180)),
+		mil => ($distance ? $distance : 0) / 1000
+	);
+
+	my ($value, $unit) = $input =~ m/^(\d+(?:\.\d+)?)(\w{1,3})?$/;
+
+	unless (defined($value) && $value ne '') {
+		$$err = "Invalid value: $input, correct syntax: <number>[unit]";
+		return -1;
+	}
+
+	my $unit_valid = 0;
+	if ($unit) {
+		$unit_valid = 1 if grep {$_ eq lc($unit)} keys %units;
+		$unit_valid = 1 if $distance && grep {$_ eq lc($unit)} keys %angle;
+		if (!$distance && grep {$_ eq lc($unit)} keys %angle) {
+			$$err = 'Angle units are not allowed here';
+			return -1;
+		}
+	} else {
+		$unit = 'mm';
+		$unit_valid = 1;
+	}
+
+	unless ($unit_valid) {
+		$$err = "Unrecognized unit: $unit, must be one of: " . join(', ', sort keys %units, ($distance ? sort keys %angle : ()));
+		return -1;
+	}
+
+	if ($distance && grep {$_ eq lc($unit)} keys %angle) {
+		return $value * $angle{lc($unit)};
+	} else {
+		return $value * $units{lc($unit)};
+	}
+}
+
+sub arg_error
+{
+	my $opt_name = shift;
+	my $err = shift;
+
+	return "Unable to process option $opt_name: $err";
+}
+
+sub notset
+{
+	return (!defined($_[0]) || $_[0] eq '');
+}
+
+sub opt_page
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'page_width'} = tomm('210mm');
+		$config{'page_height'} = tomm('297mm');
+	} else {
+		my ($error_x, $error_y);
+		my ($x, $y) = $opt_value =~ m/^($length_rx),($length_rx)$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") unless $x && $y;
+
+		$config{'page_width'} = tomm($x, \$error_x);
+		$config{'page_height'} = tomm($y, \$error_y);
+
+		if ($error_x || $error_y) {
+			die arg_error($opt_name, ($error_x ? " $error_x" : '') . ($error_y ? " $error_y" : ''));
+		}
+	}
+}
+
+sub opt_page_margin
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'page_margin'} = tomm('10mm');
+	} else {
+		my $error;
+		$config{'page_margin'} = tomm($opt_value, \$error);
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_background
+{
+	my ($opt_name, $opt_value) = @_;
+
+	$config{'background'} = $opt_value ? $opt_value : 'white';
+}
+
+sub opt_layout
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'layout_cols'} = 1;
+		$config{'layout_rows'} = 1;
+	} else {
+		my ($cols, $rows) = $opt_value =~ m/^(\d+),(\d+)$/;
+
+		die arg_error($opt_name, "Invalid argument $opt_value") unless $cols && $rows;
+
+		$config{'layout_cols'} = $cols;
+		$config{'layout_rows'} = $rows;
+	}
+}
+
+sub opt_grid_minor
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if(notset($opt_value)) {
+		$config{'grid_minor'} = 2;
+	} else {
+		if ($opt_value <= 0) {
+			$config{'grid_minor'} = 1;
+		} else {
+			$config{'grid_minor'} = $opt_value;
+		}
+	}
+}
+
+sub opt_distance
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'distance'} = tomm('50m');
+	} else {
+		my $error;
+		$config{'distance'} = tomm($opt_value, \$error);
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_center_fill
+{
+	my ($opt_name, $opt_value) = @_;
+
+	$config{'center_fill'} = $opt_value ? $opt_value : 'grey';
+}
+
+sub opt_annotation
+{
+	my ($opt_name, $opt_value) = @_;
+
+	$config{'annotation'} = $opt_value ? $opt_value : '';
+}
+
+sub opt_output
+{
+	my ($opt_name, $opt_value) = @_;
+
+	$config{'output'} = $opt_value ? $opt_value : '';
+}
+
+sub opt_target_separator
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		if ($config{'layout_rows'} == 1 && $config{'layout_cols'} == 1) {
+			$config{'target_separator_width'} = 0;
+		} else {
+			$config{'target_separator_width'} = tomm('3.5mm');
+			$config{'target_separator_color'} = 'none';
+		}
+	} else {
+		my $error;
+		my ($width, $color) = $opt_value =~ m/^($length_rx)(?:,(.+))?$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") unless $width;
+
+		$color ||= 'none';
+		$config{'target_separator_color'} = $color;
+		$config{'target_separator_width'} = tomm($width, \$error);
+
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_grid
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'grid_major'} = tomm('1moa', undef, $config{'distance'});
+	} else {
+		my $error;
+		my ($width) = $opt_value =~ m/^($length_rx)$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") if notset($width);
+
+		$config{'grid_major'} = tomm($width, \$error, $config{'distance'});
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_grid_line
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'grid_line_width'} = tomm('0.4mm');
+		$config{'grid_line_color'} = '#101010';
+	} else {
+		my $error;
+		my ($width, $color) = $opt_value =~ m/^($length_rx)(?:,(.+))?$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") unless $width;
+
+		$color ||= '#101010';
+		$config{'grid_line_color'} = $color;
+		$config{'grid_line_width'} = tomm($width, \$error);
+
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_grid_line_minor
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'grid_line_minor_width'} = tomm('0.2mm');
+		$config{'grid_line_minor_color'} = '#181818';
+	} else {
+		my $error;
+		my ($width, $color) = $opt_value =~ m/^($length_rx)(?:,(.+))?$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") unless $width;
+
+		$color ||= '#181818';
+		$config{'grid_line_minor_color'} = $color;
+		$config{'grid_line_minor_width'} = tomm($width, \$error);
+
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_circles
+{
+	my ($opt_name, $opt_value) = @_;
+
+	$config{'circles'} = [];
+	if (notset($opt_value)) {
+		$config{'circles'} = [ tomm('1moa', undef, $config{'distance'}) ];
+	} else {
+		my @circles = split(/,/, $opt_value);
+		foreach my $c (@circles) {
+			my $error;
+			my $size = tomm($c, \$error, , $config{'distance'});
+			if ($size == 0 && scalar(@{$config{'circles'}}) == 0) {
+				$config{'circles'} = undef;
+				return;
+			}
+			push @{ $config{'circles'} }, $size;
+			die arg_error($opt_name, $error) if $error;
+		}
+	}
+}
+
+sub opt_circle_line
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'circle_line_width'} = tomm('1.5mm');
+		$config{'circle_line_color'} = 'black';
+	} else {
+		my $error;
+		my ($width, $color) = $opt_value =~ m/^($length_rx)(?:,(.+))?$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") unless $width;
+
+		$color ||= 'black';
+		$config{'circle_line_color'} = $color;
+		$config{'circle_line_width'} = tomm($width, \$error, $config{'distance'});
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_squares
+{
+	my ($opt_name, $opt_value) = @_;
+
+	my $def_offset = 2.5 * $config{'grid_major'};
+	if (notset($opt_value)) {
+		$config{'squares_size'} = $config{'grid_major'};
+		$config{'squares_offset'} = $def_offset;
+	} else {
+		my ($error_size, $error_offset);
+		my ($size, $offset) = $opt_value =~ m/^($length_rx)(?:,($length_rx))?$/;
+		$offset ||= $def_offset;
+
+		die arg_error($opt_name, "Invalid argument $opt_value") if notset($size);
+
+		$config{'squares_size'} = tomm($size, \$error_size, $config{'distance'});
+		$config{'squares_offset'} = tomm($offset, \$error_offset, $config{'distance'});
+
+		if ($error_size || $error_offset) {
+			die arg_error($opt_name, ($error_size ? " $error_size" : '') . ($error_offset ? " $error_offset" : ''));
+		}
+	}
+}
+
+sub opt_squares_fill
+{
+	my ($opt_name, $opt_value) = @_;
+
+	$config{'squares_fill'} = $opt_value ? $opt_value : 'black';
+}
+
+sub opt_connect_squares
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'connect_squares_width'} = tomm('2mm');
+		$config{'connect_squares_color'} = 'black';
+	} else {
+		my $error;
+		my ($width, $color) = $opt_value =~ m/^($length_rx)(?:,(.+))?$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") if notset($width);
+
+		$color ||= 'black';
+		$config{'connect_squares_color'} = $color;
+		$config{'connect_squares_width'} = tomm($width, \$error, $config{'distance'});
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_cross
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'cross'} = -5;
+	} else {
+		my $error;
+		my ($sign, $value) = $opt_value =~ m/^([+-])?($length_rx)$/;
+
+		die arg_error($opt_name, "Invalid argument $opt_value") if notset($value);
+
+		$config{'cross'} = tomm($value, \$error, $config{'distance'});
+		$config{'cross'} *= -1 if ($sign && $sign eq '-');
+
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_cross_line
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if (notset($opt_value)) {
+		$config{'cross_line_width'} = tomm('2mm');
+		$config{'cross_line_color'} = 'black';
+	} else {
+		my $error;
+		my ($width, $color) = $opt_value =~ m/^($length_rx)(?:,(.+))?$/;
+
+		die arg_error($opt_name, "Invalid argument for $opt_name: $opt_value") unless $width;
+
+		$color ||= 'black';
+		$config{'cross_line_color'} = $color;
+		$config{'cross_line_width'} = tomm($width, \$error, $config{'distance'});
+
+		die arg_error($opt_name, $error) if $error;
+	}
+}
+
+sub opt_help
+{
+	my ($opt_name, $opt_value) = @_;
+
+	if ($opt_value) {
+		pod2usage;
+		exit(0);
+	}
+}
+
+sub init_config
+{
+	my ($target_separator, $grid, $circles, $squares, $squares_fill, $circle_line,
+		$cross, $cross_line, $connect_squares);
+
+	# options that depend on other options having values already set cannot be processed
+	# by the handler subs at the time of the GetOptions() call and need to be processed later.
+	my %opt_mapping = (
+		'help' => \&opt_help,
+		'page:s' => \&opt_page,
+		'page-margin:s' => \&opt_page_margin,
+		'background:s' => \&opt_background,
+		'layout:s' => \&opt_layout,
+		'grid-minor:i' => \&opt_grid_minor,
+		'grid-line:s' => \&opt_grid_line,
+		'grid-line-minor:s' => \&opt_grid_line_minor,
+		'distance:s' => \&opt_distance,
+		'center-fill:s' => \&opt_center_fill,
+		'annotation:s' => \&opt_annotation,
+		'output:s' => \&opt_output,
+		'target-separator:s' => \$target_separator,
+		'grid:s' => \$grid,
+		'circles:s' => \$circles,
+		'circle-line:s' => \$circle_line,
+		'squares:s' => \$squares,
+		'squares-fill:s' => \$squares_fill,
+		'connect-squares:s' => \$connect_squares,
+		'cross:s' => \$cross,
+		'cross-line:s' => \$cross_line
+	);
+
+	# explicitly call each handler with empty values to set defaults
+	foreach my $ref (values %opt_mapping) {
+		next unless ref($ref) eq 'CODE';
+		$ref->();
+	}
+
+	die unless GetOptions(%opt_mapping);
+
+	opt_target_separator('target-separator', $target_separator);
+	opt_grid('grid', $grid);
+	opt_circles('circles', $circles);
+	opt_circle_line('circle-line', $circle_line);
+	opt_squares('squares', $squares);
+	opt_squares_fill('squares-fill', $squares_fill);
+	opt_connect_squares('connect_squares', $connect_squares);
+	opt_cross('cross', $cross);
+	opt_cross_line('cross-line', $cross_line);
+
+	if ($ENV{'DUMPCONFIG'}) {
+		$Data::Dumper::Sortkeys = 1;
+		print Dumper(\%config);
+		die;
+	}
+}
+
+sub mm
+{
+	my $value = shift;
+	return "${value}mm";
+}
+
+sub getdim
+{
+	my $c = shift;
+
+	my $w = tomm($c->{width});
+	my $h = tomm($c->{height});
+	return($w, $h, $w/2, $h/2);
+}
+
+__END__
+
+=head1 NAME
+
+targen - create customizable shooting targets
+
+=head1 DESCRIPTION
+
+This software produces vector images of customizable shooting targets. Output format is SVG.
+The elements of the target can be scaled relative to the desired shooting distance by using
+angle-based units (minute of angle and milliradian) or set to an absolute length.
+
+Supported units of distance: mm, cm, m, km, in, ft, yd, mi; will assume mm if not specified.
+
+Supported angle units: moa, mil. One mil is defined as distance / 1000.
+
+Not all options support both the linear and angular units. See the option descriptions for details.
+
+Supported color definitions: everything that is allowed by the SVG format specification, e.g.,
+black, red, white, #rrggbb notation.
+100% transparency can be set using a special color keyword "none".
+
+=head1 SYNOPSIS
+
+  targen [options]
+
+Options (values listed are used as defaults, abbreviated options are allowed as per L<Getopt::Long|Getopt::Long>):
+
+  --help
+    Print usage information.
+
+  --output=
+    Output file name, write to stdout by default.
+
+  --page=210mm,297mm
+    Page dimensions: <width>,<height>. Defaults to A4 in portrait orientation.
+    Swap width and height dimensions to toggle between portrait and landscape.
+
+  --page-margin=10mm
+    Page margin, will be the same on all edges.
+
+  --background=white
+    Page background color, including margins.
+
+  --layout=1,1
+    Number of rows and columns to draw the targets in.
+
+  --target-separator=0[,<color>]
+    Target separator line width and color.
+    Default for multi-target layouts: --target-separator=3.5mm,none.
+    Angle units are allowed.
+
+  --grid=1moa
+    Grid major division step. A multiple of the scope turret's click value
+    will be a natural choice when making zeroing-in targets.
+    Set to zero to disable grid.
+    Angle units are allowed.
+
+  --grid-minor=2
+    Minor grid divisions per each major division.
+
+  --grid-line=0.4mm,#101010
+    Line width and color for the major grid lines.
+
+  --grid-line-minor=0.2mm,#181818
+    Line width and color for the minor grid lines.
+
+  --distance=50m
+    Shooting distance. Used to calculate the absolute length of moa and mil.
+
+  --circles=1moa[,1.5moa,...]
+    Diameters of the concentric circles placed at the center of the target,
+    starting with the innermost circle.
+    Default: draw one 1 MOA circle. Use --circles=0 to disable.
+    Diameters are measured by the outer edge.
+    Angle units are allowed.
+
+  --circle-line=1.5mm[,black]
+    Line width and color with which the circles are drawn.
+    Angle units are allowed.
+
+  --center-fill=grey
+    Color to fill the innermost circle with.
+    Use "none" to disable.
+
+  --squares=1${grid_unit},2.5${grid_unit}
+    Draw four squares at the corners of the square at the center of the target.
+    First argument sets the size of the squares, second sets the center offset
+    from the center of the target.
+    Use --squares=0 to disable. Use a small size like 0.1mm if the squares
+    themselves are not desirable, but you still want to draw the lines
+    that connect them (see below).
+    Angle units are allowed.
+
+  --squares-fill=black
+    Color to fill the squares with.
+
+  --connect-squares=2mm[,black]
+    Connect the centers of the four squares using the provided line width and color.
+    Set to zero to disable.
+
+  --cross=-5mm
+    Draw a cross at the center of the target. Positive values set the distance
+    from the center to the ends of the lines, negative values set the distance
+    from the edge of the target to the ends of the lines.
+    Zero disables the cross. If you want it to reach the edges of the target, use
+    a very small value like -0.01mm.
+    Angle units are allowed.
+
+  --cross-line=2mm[,black]
+    Line width and color with which the cross lines are drawn.
+    Angle units are allowed.
+
+  --annotation=
+    Target annotation (e.g., "1 MOA @50m"). Set to empty to disable.
+
+=head1 EXAMPLES
+
+Create an A4-sized image with a single target for zeroing in at 50 meters with a 1 MOA-based grid
+using default options:
+
+  targen --output=1moa@50m.svg
+
+1x1 layout, darker background, red bullseye, convert to pdf on the fly:
+
+  targen -a '1MOA @50m' --page=210mm,297mm --squares=1moa,3moa --center-fill=#750000 \
+    -l=1,1 --background=#f8f8f8 -o=1x1-1moa@50m.svg
+
+2x1 layout, landscape orientation:
+
+  targen -a '1MOA @50m' --page=297mm,210mm --squares=0.5moa,2.5moa --center-fill=#750000 \
+    -l=2,1 --background=#f8f8f8 --target-separator=3.5,#f5f5f5 -o=2x1-1moa@50m.svg
+
+2x3 layout, tighter element placing:
+
+  targen -a '1MOA @50m' --squares=0.5moa,1.5moa --center-fill=#750000 -l=2,3 \
+    --background=#f8f8f8 --target-separator=3.5,#f5f5f5 -o=2x3-1moa@50m.svg
+
+1x1 layout, 1 MOA bullseye (default), 0.5 mil grid, 0.1 mil minor division:
+
+  targen -a '50m, bullseye: 1MOA, grid: 0.5 mil' --grid=0.5mil --grid-line=0.6mm --squares=0.25mil,1mil \
+    --grid-minor=5 --center-fill=#750000 -l=1,1 --background=#f8f8f8 -o=1x1-1moa-milgrid-50m.svg
+
+=head1 DEPENDENCIES
+
+Non-base perl modules required to run targen:
+
+L<SVG|SVG> (debian: L<libsvg-perl|https://packages.debian.org/stable/libsvg-perl>)
+
+=head1 HINTS
+
+Use cairosvg (debian: L<cairosvg|https://packages.debian.org/stable/cairosvg>) or rsvg-convert (debian: L<librsvg2-bin|https://packages.debian.org/stable/librsvg2-bin>) to produce a platform-independent printable lossless vector PDF document:
+
+  targen | cairosvg -f pdf - -o 1moa@50m.pdf
+
+=head1 DEVELOPMENT
+
+Ideas are welcome. Use GitHub issues to tell the author what you think. Pull requests are even more welcome.
+
+Targen is not expected to crash or throw warnings under any conditions. Please submit an issue if you encounter anything unexpected or undocumented.
+
+=head1 REFERENCES
+
+https://github.com/shapirus/targen
+
+
+=head1 LICENSE
+
+    Copyright (C) 2022  shapirus https://github.com/shapirus/
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as
+    published by the Free Software Foundation, either version 3 of the
+    License, or (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
