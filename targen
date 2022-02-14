@@ -211,6 +211,8 @@ sub circles
 
 	my ($w, $h, $cx, $cy) = getdim($c);
 
+	return unless $config{'circles'} && scalar @{$config{'circles'}} > 0;
+
 	# draw the innermost circle last (to support interleaving circles background in the future)
 	my @conf = sort {$b <=> $a} @{$config{'circles'}};
 
